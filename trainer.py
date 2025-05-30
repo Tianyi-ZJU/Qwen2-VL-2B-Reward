@@ -216,20 +216,38 @@ class RewardModelTrainer:
             scores1 = self.model(images, texts1)
             scores2 = self.model(images, texts2)
             
-            # logger.info(f"scores1: {scores1}")
-            # logger.info(f"scores2: {scores2}")
+            # 确保scores是二维张量[batch_size, 1]
+            if scores1.dim() == 1:
+                scores1 = scores1.unsqueeze(1)
+            if scores2.dim() == 1:
+                scores2 = scores2.unsqueeze(1)
+                
+            # 如果scores有多列，只取第一列
+            if scores1.shape[1] > 1:
+                scores1 = scores1[:, 0:1]
+            if scores2.shape[1] > 1:
+                scores2 = scores2[:, 0:1]
             
             # 计算对比损失
             # [0, 1]表示第一个回答更好，[1, 0]表示第二个回答更好
             # 如果rankings[:, 1] > rankings[:, 0]，则第一个回答更好
-            better_scores = torch.where(rankings[:, 1] > rankings[:, 0], scores1, scores2)
-            worse_scores = torch.where(rankings[:, 1] > rankings[:, 0], scores2, scores1)
-
-            # 随机选一组对应的better_scores和worse_scores打印出来
-            random_index = random.randint(0, len(better_scores) - 1)
-            logger.info(f"better_scores: {better_scores[random_index]}")
-            logger.info(f"worse_scores: {worse_scores[random_index]}")          
+            comparison = rankings[:, 1] > rankings[:, 0]
             
+            # 确保comparison是列向量，以便正确广播
+            comparison = comparison.view(-1, 1)
+            
+            # 使用广播规则正确应用torch.where
+            better_scores = torch.where(comparison, scores1, scores2)
+            worse_scores = torch.where(comparison, scores2, scores1)
+            
+            # 确保scores是一维的用于后续处理
+            better_scores = better_scores.squeeze(1)
+            worse_scores = worse_scores.squeeze(1)
+
+            # 打印所有样本的better_scores和worse_scores
+            score_pairs = [f"({better_scores[i].item():.2f}, {worse_scores[i].item():.2f})" for i in range(len(better_scores))]
+            logger.info(f"批次分数对 [better, worse]: {' '.join(score_pairs)}")
+
             # 计算分数差异
             score_diff = better_scores - worse_scores
             
@@ -345,7 +363,7 @@ class RewardModelTrainer:
                     if self.args.log_samples:
                         log_batch_to_wandb(batch, scores1, scores2, rankings, current_loss, self.global_step)
 
-            del scores1, scores2, better_scores, worse_scores, score_diff, scaled_diff, random_index
+            del scores1, scores2, better_scores, worse_scores, score_diff, scaled_diff
         
         # 处理最后一个不完整的梯度累积批次
         if accumulated_loss > 0:
